@@ -1,0 +1,111 @@
+---
+- name: Despliegue de una pagina y una aplicacion web
+  hosts: all
+  become: true
+  vars_files:
+    - vars/default.yml
+
+  tasks:
+  
+   #Instalar los paquetes necesarios
+    - name: Instalar prerequisitos
+      apt: name={{ item }} update_cache=yes state=latest force_apt_get=yes
+      loop: [ 'aptitude' ]
+
+    - name: Instalar paquetes LAMP - Linux Apache MySQL PHP
+      apt: name={{ item }} update_cache=yes state=latest
+      loop: [ 'apache2', 'mysql-server', 'python3-pymysql', 'php', 'php-mysql', 'libapache2-mod-php' ]
+ 
+  #Configuracion de Apache     
+    - name: Crear el directorio raiz para la pagina web
+      file:
+        path: "/var/www/www{{ http_host }}"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Crear el directorio raiz para la aplicacion web
+      file:
+        path: "/var/www/app{{ http_host }}"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: '0755'
+
+    - name: Configurar los virtualhost para Apache
+      template:
+        src: "files/apache.conf.j2"
+        dest: "/etc/apache2/sites-available/{{ http_conf }}"
+      notify: Reload Apache
+
+    - name: Habilitar nuevo sitio
+      shell: /usr/sbin/a2ensite {{ http_conf }}
+      notify: Reload Apache
+
+    - name: Deshabilitar el sitio por default de Apache
+      shell: /usr/sbin/a2dissite 000-default.conf
+      when: disable_default
+      notify: Reload Apache
+
+  # Configuracion de MySQL
+    - name: Cambiar la contraseña para el usuario de base de datos
+      mysql_user:
+        login_user: root
+        login_password: "root"
+        name: root
+        password: "{{ mysql_root_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Crear nueva base de datos
+      mysql_db: name=bienes_raices state=present login_user=root login_password="root"
+
+    - name: Agregar datos a la base de datos
+      copy: src=bienesraices.sql dest=/tmp/bienesraices.sql
+
+    - name: Insertar datos en la base de datos
+      mysql_db: name=bienes_raices state=import target=/tmp/bienesraices.sql login_user=root login_password="root"
+
+    - name: Eliminar las cuentas anonimas
+      mysql_user:
+        name: ''
+        host_all: yes
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+    - name: Eliminar la base de datos de prueba
+      mysql_db:
+        name: test
+        state: absent
+        login_user: root
+        login_password: "{{ mysql_root_password }}"
+
+  # Configuracion de Firewall
+    - name: "UFW - Permitir HTTP en el puerto {{ http_port }}"
+      ufw:
+        rule: allow
+        port: "{{ http_port }}"
+        proto: tcp
+
+  # Pagina web
+    - name: Clonar el repositorio para la pagina web
+      git:
+        repo: 'https://github.com/RebecaValadez/curriculum.git'
+        dest: "/var/www/www{{ http_host }}/"
+
+  # Aplicacion web
+    - name: Clonar el repositorio para la aplicacion web
+      git:
+        repo: 'https://github.com/RebecaValadez/bienesraices.git'
+        dest: "/var/www/app{{ http_host }}/"
+        
+  # Recargar y reiniciar Apache
+  handlers:
+    - name: Reload Apache
+      service:
+        name: apache2
+        state: reloaded
+
+    - name: Restart Apache
+      service:
+        name: apache2
+        state: restarted
